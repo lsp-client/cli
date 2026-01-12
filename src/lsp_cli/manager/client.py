@@ -41,6 +41,7 @@ class ManagedClient:
     _logger: loguru.Logger = field(init=False)
     _logger_sink_id: int = field(init=False)
     _port: int | None = field(init=False, default=None)
+    _ready_event: anyio.Event = field(init=False, factory=anyio.Event)
 
     def __attrs_post_init__(self) -> None:
         self._deadline = anyio.current_time() + settings.idle_timeout
@@ -64,6 +65,10 @@ class ManagedClient:
     @property
     def id(self) -> str:
         return get_client_id(self.target)
+
+    async def wait_ready(self) -> None:
+        """Wait until the client is assigned a port/socket and ready to serve."""
+        await self._ready_event.wait()
 
     @property
     def conn(self) -> ConnectionInfo:
@@ -173,10 +178,12 @@ class ManagedClient:
             # On Windows, fd is not supported by uvicorn, so we close the socket
             # before starting the server.
             sock.close()
+            self._ready_event.set()
         else:
             uds_path = anyio.Path(self.uds_path)
             await uds_path.unlink(missing_ok=True)
             await uds_path.parent.mkdir(parents=True, exist_ok=True)
+            self._ready_event.set()
 
         self._logger.info(
             "Starting managed client for project {} at {}",

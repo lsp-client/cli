@@ -63,6 +63,8 @@ class Manager:
             m_client = ManagedClient(target)
             self._clients[client_id] = m_client
             self._tg.soonify(self._run_client)(m_client)
+            # Wait for the client to be ready (assigned a port/socket)
+            await m_client.wait_ready()
         else:
             logger.info(f"[Manager] Reusing existing client: {client_id}")
             self._clients[client_id]._reset_timeout()
