@@ -10,11 +10,12 @@ def is_server_alive(
 ) -> bool:
     if uds_path and uds_path.exists():
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.connect(str(uds_path))
-                return True
-        except (OSError, AttributeError):
-            # AttributeError if AF_UNIX is not available (Windows)
+            af_unix = getattr(socket, "AF_UNIX", None)
+            if af_unix is not None:
+                with socket.socket(af_unix, socket.SOCK_STREAM) as s:
+                    s.connect(str(uds_path))
+                    return True
+        except OSError:
             pass
 
     if host and port:
@@ -41,9 +42,11 @@ async def wait_for_server(
         with attempt:
             if uds_path:
                 try:
-                    _ = await anyio.connect_unix(uds_path)
-                    return
-                except (OSError, RuntimeError, AttributeError):
+                    af_unix = getattr(socket, "AF_UNIX", None)
+                    if af_unix is not None:
+                        _ = await anyio.connect_unix(uds_path)
+                        return
+                except (OSError, RuntimeError):
                     pass
             if host and port:
                 try:
