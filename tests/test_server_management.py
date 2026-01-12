@@ -60,7 +60,8 @@ def manager_process():
                     uds_path=conn.uds_path, host=conn.host, port=conn.port
                 ):
                     break
-            except Exception:
+            except (OSError, ValueError, Exception):
+                # Failed to read/parse connection info - retry
                 pass
         time.sleep(0.1)
     else:
@@ -92,15 +93,32 @@ def test_file():
     return file
 
 
+def _load_connection_info() -> ConnectionInfo:
+    """Load and validate the manager connection info from disk with error handling."""
+    try:
+        data = MANAGER_CONN_PATH.read_text()
+    except OSError as exc:
+        raise RuntimeError(
+            f"Manager connection file is not available at {MANAGER_CONN_PATH!s}"
+        ) from exc
+
+    try:
+        return ConnectionInfo.model_validate_json(data)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Invalid manager connection data in {MANAGER_CONN_PATH!s}"
+        ) from exc
+
+
 def get_manager_transport():
-    conn = ConnectionInfo.model_validate_json(MANAGER_CONN_PATH.read_text())
+    conn = _load_connection_info()
     if conn.uds_path:
         return httpx.AsyncHTTPTransport(uds=str(conn.uds_path), retries=5)
     return httpx.AsyncHTTPTransport(retries=5)
 
 
 def get_manager_url():
-    conn = ConnectionInfo.model_validate_json(MANAGER_CONN_PATH.read_text())
+    conn = _load_connection_info()
     return conn.url
 
 

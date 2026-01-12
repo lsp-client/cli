@@ -16,6 +16,7 @@ from loguru import logger as global_logger
 from lsp_cli.client import TargetClient
 from lsp_cli.manager.capability import CapabilityController, Capabilities
 from lsp_cli.settings import IS_WINDOWS, LOG_DIR, RUNTIME_DIR, settings
+from lsp_cli.utils.socket import allocate_port
 
 from .models import ConnectionInfo, ManagedClientInfo
 
@@ -67,6 +68,11 @@ class ManagedClient:
     @property
     def conn(self) -> ConnectionInfo:
         if IS_WINDOWS:
+            if self._port is None:
+                raise RuntimeError(
+                    "Connection information is not available yet: "
+                    "the managed client has not been assigned a port."
+                )
             return ConnectionInfo(host="127.0.0.1", port=self._port)
         return ConnectionInfo(uds_path=self.uds_path)
 
@@ -134,13 +140,8 @@ class ManagedClient:
         )
 
         if IS_WINDOWS:
-            import socket
-
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("127.0.0.1", 0))
-                port_val = s.getsockname()[1]
-                assert isinstance(port_val, int)
-                self._port = port_val
+            sock, port_val = allocate_port()
+            self._port = port_val
 
             config = uvicorn.Config(
                 app,
@@ -148,6 +149,7 @@ class ManagedClient:
                 port=port_val,
                 loop="asyncio",
                 log_config=None,
+                fd=sock.fileno(),
             )
         else:
             config = uvicorn.Config(

@@ -182,17 +182,26 @@ class TestConnectionReliability:
         import os
 
         if os.name == "nt":
-            subprocess.run(
-                [
-                    "taskkill",
-                    "/F",
-                    "/IM",
-                    "python.exe",
-                    "/FI",
-                    "MODULE == lsp_cli.manager",
-                ],
+            # On Windows, use tasklist to find the specific process and then kill it
+            # This is more reliable than using filters that may not work as expected
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq python.exe", "/FO", "CSV"],
                 capture_output=True,
+                text=True,
             )
+            if result.returncode == 0:
+                # Parse output to find PIDs running lsp_cli.manager
+                # For simplicity in tests, we use the WMIC command if available
+                subprocess.run(
+                    [
+                        "wmic",
+                        "process",
+                        "where",
+                        "CommandLine like '%lsp_cli.manager%'",
+                        "delete",
+                    ],
+                    capture_output=True,
+                )
         else:
             subprocess.run(
                 ["pkill", "-f", "lsp_cli.manager"],
