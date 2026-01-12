@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -41,6 +42,7 @@ class ManagedClient:
     _logger: loguru.Logger = field(init=False)
     _logger_sink_id: int = field(init=False)
     _port: int | None = field(init=False, default=None)
+    _socket: socket.socket | None = field(init=False, default=None)
 
     def __attrs_post_init__(self) -> None:
         self._deadline = anyio.current_time() + settings.idle_timeout
@@ -142,6 +144,7 @@ class ManagedClient:
         if IS_WINDOWS:
             sock, port_val = allocate_port()
             self._port = port_val
+            self._socket = sock  # Keep reference to close later
 
             config = uvicorn.Config(
                 app,
@@ -184,6 +187,10 @@ class ManagedClient:
             self._logger.info("Cleaning up client")
             if not IS_WINDOWS:
                 await anyio.Path(self.uds_path).unlink(missing_ok=True)
+            else:
+                # Close the socket on Windows
+                if self._socket is not None:
+                    self._socket.close()
             self._logger.remove(self._logger_sink_id)
             self._timeout_scope.cancel()
             self._server_scope.cancel()

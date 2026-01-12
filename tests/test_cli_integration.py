@@ -182,17 +182,10 @@ class TestConnectionReliability:
         import os
 
         if os.name == "nt":
-            # On Windows, use tasklist to find the specific process and then kill it
-            # This is more reliable than using filters that may not work as expected
-            result = subprocess.run(
-                ["tasklist", "/FI", "IMAGENAME eq python.exe", "/FO", "CSV"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                # Parse output to find PIDs running lsp_cli.manager
-                # For simplicity in tests, we use the WMIC command if available
-                subprocess.run(
+            # On Windows, try to use WMIC if available, otherwise skip this test step
+            # WMIC is deprecated in newer Windows versions but may still be present
+            try:
+                result = subprocess.run(
                     [
                         "wmic",
                         "process",
@@ -201,7 +194,24 @@ class TestConnectionReliability:
                         "delete",
                     ],
                     capture_output=True,
+                    timeout=5,
                 )
+                # If WMIC is not available, try tasklist/taskkill as fallback
+                if result.returncode != 0:
+                    # Try to use PowerShell as a more modern alternative
+                    subprocess.run(
+                        [
+                            "powershell",
+                            "-Command",
+                            "Get-Process | Where-Object {$_.CommandLine -like '*lsp_cli.manager*'} | Stop-Process -Force",
+                        ],
+                        capture_output=True,
+                        timeout=5,
+                    )
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                # WMIC/PowerShell not available or timed out - continue with test
+                # The manager auto-start will still work if no manager is running
+                pass
         else:
             subprocess.run(
                 ["pkill", "-f", "lsp_cli.manager"],
