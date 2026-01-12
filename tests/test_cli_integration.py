@@ -179,11 +179,27 @@ class TestConnectionReliability:
     def test_manager_auto_start_reliability(self):
         """Test that manager auto-starts reliably."""
         # Kill any existing manager
-        subprocess.run(
-            ["pkill", "-f", "lsp_cli.manager"],
-            capture_output=True,
-        )
-        time.sleep(0.5)
+        import os
+        import signal
+
+        if os.name == "nt":
+            subprocess.run(
+                [
+                    "taskkill",
+                    "/F",
+                    "/IM",
+                    "python.exe",
+                    "/FI",
+                    "MODULE == lsp_cli.manager",
+                ],
+                capture_output=True,
+            )
+        else:
+            subprocess.run(
+                ["pkill", "-f", "lsp_cli.manager"],
+                capture_output=True,
+            )
+        time.sleep(1.0)
 
         # First command should auto-start manager
         result = self.run_lsp_command("server", "list")

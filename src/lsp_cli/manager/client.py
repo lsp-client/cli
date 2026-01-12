@@ -15,9 +15,9 @@ from loguru import logger as global_logger
 
 from lsp_cli.client import TargetClient
 from lsp_cli.manager.capability import CapabilityController, Capabilities
-from lsp_cli.settings import LOG_DIR, RUNTIME_DIR, settings
+from lsp_cli.settings import IS_WINDOWS, LOG_DIR, RUNTIME_DIR, settings
 
-from .models import ManagedClientInfo
+from .models import ConnectionInfo, ManagedClientInfo
 
 
 def get_client_id(target: TargetClient) -> str:
@@ -39,6 +39,7 @@ class ManagedClient:
 
     _logger: loguru.Logger = field(init=False)
     _logger_sink_id: int = field(init=False)
+    _port: int | None = field(init=False, default=None)
 
     def __attrs_post_init__(self) -> None:
         self._deadline = anyio.current_time() + settings.idle_timeout
@@ -62,6 +63,12 @@ class ManagedClient:
     @property
     def id(self) -> str:
         return get_client_id(self.target)
+
+    @property
+    def conn(self) -> ConnectionInfo:
+        if IS_WINDOWS:
+            return ConnectionInfo(host="127.0.0.1", port=self._port)
+        return ConnectionInfo(uds_path=self.uds_path)
 
     @property
     def uds_path(self) -> Path:
@@ -126,12 +133,29 @@ class ManagedClient:
             exception_handlers={Exception: exception_handler},
         )
 
-        config = uvicorn.Config(
-            app,
-            uds=str(self.uds_path),
-            loop="asyncio",
-            log_config=None,  # Disable default uvicorn logging
-        )
+        if IS_WINDOWS:
+            import socket
+
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", 0))
+                port_val = s.getsockname()[1]
+                assert isinstance(port_val, int)
+                self._port = port_val
+
+            config = uvicorn.Config(
+                app,
+                host="127.0.0.1",
+                port=port_val,
+                loop="asyncio",
+                log_config=None,
+            )
+        else:
+            config = uvicorn.Config(
+                app,
+                uds=str(self.uds_path),
+                loop="asyncio",
+                log_config=None,  # Disable default uvicorn logging
+            )
         self._server = uvicorn.Server(config)
 
         async with asyncer.create_task_group() as tg:
@@ -144,18 +168,20 @@ class ManagedClient:
         self._logger.info(
             "Starting managed client for project {} at {}",
             self.target.project_path,
-            self.uds_path,
+            self.conn,
         )
 
-        uds_path = anyio.Path(self.uds_path)
-        await uds_path.unlink(missing_ok=True)
-        await uds_path.parent.mkdir(parents=True, exist_ok=True)
+        if not IS_WINDOWS:
+            uds_path = anyio.Path(self.uds_path)
+            await uds_path.unlink(missing_ok=True)
+            await uds_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             await self._serve()
         finally:
             self._logger.info("Cleaning up client")
-            await uds_path.unlink(missing_ok=True)
+            if not IS_WINDOWS:
+                await anyio.Path(self.uds_path).unlink(missing_ok=True)
             self._logger.remove(self._logger_sink_id)
             self._timeout_scope.cancel()
             self._server_scope.cancel()

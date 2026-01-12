@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from lsp_cli.manager import (
+    ConnectionInfo,
     CreateClientRequest,
     CreateClientResponse,
     DeleteClientRequest,
@@ -22,15 +23,23 @@ from lsp_cli.manager import (
     ManagedClientInfoList,
     connect_manager,
 )
-from lsp_cli.settings import MANAGER_UDS_PATH, RUNTIME_DIR
+from lsp_cli.settings import (
+    IS_WINDOWS,
+    MANAGER_CONN_PATH,
+    MANAGER_UDS_PATH,
+    RUNTIME_DIR,
+)
 from lsp_cli.utils.http import AsyncHttpClient, HttpClient
-from lsp_cli.utils.socket import is_socket_alive, wait_socket
+from lsp_cli.utils.socket import is_server_alive, wait_for_server
 
 
 @pytest.fixture(scope="module")
 def manager_process():
     """Start the manager process for testing."""
-    MANAGER_UDS_PATH.unlink(missing_ok=True)
+    if MANAGER_CONN_PATH.exists():
+        MANAGER_CONN_PATH.unlink()
+    if MANAGER_UDS_PATH.exists():
+        MANAGER_UDS_PATH.unlink()
     MANAGER_UDS_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     proc = subprocess.Popen(
@@ -43,9 +52,17 @@ def manager_process():
     # Wait for manager to be ready
     timeout = 10
     start = time.time()
+    conn = None
     while time.time() - start < timeout:
-        if is_socket_alive(MANAGER_UDS_PATH):
-            break
+        if MANAGER_CONN_PATH.exists():
+            try:
+                conn = ConnectionInfo.model_validate_json(MANAGER_CONN_PATH.read_text())
+                if is_server_alive(
+                    uds_path=conn.uds_path, host=conn.host, port=conn.port
+                ):
+                    break
+            except Exception:
+                pass
         time.sleep(0.1)
     else:
         proc.kill()
@@ -61,7 +78,10 @@ def manager_process():
         proc.kill()
         proc.wait()
 
-    MANAGER_UDS_PATH.unlink(missing_ok=True)
+    if MANAGER_CONN_PATH.exists():
+        MANAGER_CONN_PATH.unlink()
+    if MANAGER_UDS_PATH.exists():
+        MANAGER_UDS_PATH.unlink()
 
 
 @pytest.fixture
@@ -73,13 +93,26 @@ def test_file():
     return file
 
 
+def get_manager_transport():
+    conn = ConnectionInfo.model_validate_json(MANAGER_CONN_PATH.read_text())
+    if conn.uds_path:
+        return httpx.AsyncHTTPTransport(uds=str(conn.uds_path), retries=5)
+    return httpx.AsyncHTTPTransport(retries=5)
+
+
+def get_manager_url():
+    conn = ConnectionInfo.model_validate_json(MANAGER_CONN_PATH.read_text())
+    return conn.url
+
+
 class TestManagerConnection:
     """Test manager connection reliability."""
 
-    def test_manager_socket_exists(self, manager_process):
-        """Test that manager socket file is created."""
-        assert MANAGER_UDS_PATH.exists()
-        assert is_socket_alive(MANAGER_UDS_PATH)
+    def test_manager_conn_exists(self, manager_process):
+        """Test that manager connection file is created."""
+        assert MANAGER_CONN_PATH.exists()
+        conn = ConnectionInfo.model_validate_json(MANAGER_CONN_PATH.read_text())
+        assert is_server_alive(uds_path=conn.uds_path, host=conn.host, port=conn.port)
 
     def test_connect_manager_creates_client(self, manager_process):
         """Test that connect_manager() creates a working HTTP client."""
@@ -120,11 +153,19 @@ class TestClientLifecycle:
             )
             assert resp is not None
 
-            # Wait for socket to be created
-            await wait_socket(resp.uds_path, timeout=10.0)
+            # Wait for server to be created
+            await wait_for_server(
+                uds_path=resp.conn.uds_path,
+                host=resp.conn.host,
+                port=resp.conn.port,
+                timeout=10.0,
+            )
 
-            assert resp.uds_path.exists()
-            assert is_socket_alive(resp.uds_path)
+            if resp.conn.uds_path:
+                assert resp.conn.uds_path.exists()
+            assert is_server_alive(
+                uds_path=resp.conn.uds_path, host=resp.conn.host, port=resp.conn.port
+            )
             # The project path is determined by find_client logic
             # It should be a parent directory of test_file
             assert test_file.is_relative_to(resp.info.project_path)
@@ -141,7 +182,7 @@ class TestClientLifecycle:
                 json=CreateClientRequest(path=test_file),
             )
             assert resp1 is not None
-            uds_path1 = resp1.uds_path
+            conn1 = resp1.conn
             time1 = resp1.info.remaining_time
 
             # Wait a bit to ensure time difference is measurable
@@ -154,7 +195,7 @@ class TestClientLifecycle:
                 json=CreateClientRequest(path=test_file),
             )
             assert resp2 is not None
-            assert resp2.uds_path == uds_path1
+            assert resp2.conn == conn1
 
             # Remaining time should be reset (approximately equal to full timeout)
             # Both should be close to the full idle_timeout
@@ -170,7 +211,7 @@ class TestClientLifecycle:
                 json=CreateClientRequest(path=test_file),
             )
             assert create_resp is not None
-            uds_path = create_resp.uds_path
+            conn = create_resp.conn
 
             # Delete client
             delete_resp = client.delete(
@@ -180,9 +221,11 @@ class TestClientLifecycle:
             )
             assert delete_resp is not None
 
-            # Socket should be cleaned up shortly
+            # Server should be cleaned up shortly
             time.sleep(0.5)
-            assert not is_socket_alive(uds_path)
+            assert not is_server_alive(
+                uds_path=conn.uds_path, host=conn.host, port=conn.port
+            )
 
     def test_list_clients(self, manager_process, test_file):
         """Test listing all clients."""
@@ -230,9 +273,9 @@ class TestConcurrentAccess:
         files = [f for f in files if f.exists()][:3]  # Limit to 3 files
 
         async def create_client(file: Path):
-            transport = httpx.AsyncHTTPTransport(uds=str(MANAGER_UDS_PATH), retries=5)
+            transport = get_manager_transport()
             async with httpx.AsyncClient(
-                transport=transport, base_url="http://localhost"
+                transport=transport, base_url=get_manager_url()
             ) as http_client:
                 async with AsyncHttpClient(http_client) as client:
                     try:
@@ -242,9 +285,15 @@ class TestConcurrentAccess:
                             json=CreateClientRequest(path=file),
                         )
                         if resp:
-                            # Wait for socket to be created
-                            await wait_socket(resp.uds_path, timeout=10.0)
-                            assert resp.uds_path.exists()
+                            # Wait for server to be created
+                            await wait_for_server(
+                                uds_path=resp.conn.uds_path,
+                                host=resp.conn.host,
+                                port=resp.conn.port,
+                                timeout=10.0,
+                            )
+                            if resp.conn.uds_path:
+                                assert resp.conn.uds_path.exists()
                             return resp
                     except (httpx.HTTPStatusError, OSError):
                         # Some files might not have LSP support or socket may not be ready
@@ -260,9 +309,9 @@ class TestConcurrentAccess:
         """Test concurrent list operations."""
 
         async def list_clients():
-            transport = httpx.AsyncHTTPTransport(uds=str(MANAGER_UDS_PATH), retries=5)
+            transport = get_manager_transport()
             async with httpx.AsyncClient(
-                transport=transport, base_url="http://localhost"
+                transport=transport, base_url=get_manager_url()
             ) as http_client:
                 async with AsyncHttpClient(http_client) as client:
                     resp = await client.get("/list", ManagedClientInfoList)
@@ -301,9 +350,9 @@ class TestConcurrentAccess:
                         pass
 
         async def list_clients():
-            transport = httpx.AsyncHTTPTransport(uds=str(MANAGER_UDS_PATH), retries=5)
+            transport = get_manager_transport()
             async with httpx.AsyncClient(
-                transport=transport, base_url="http://localhost"
+                transport=transport, base_url=get_manager_url()
             ) as http_client:
                 async with AsyncHttpClient(http_client) as client:
                     return await client.get("/list", ManagedClientInfoList)
@@ -316,46 +365,51 @@ class TestConcurrentAccess:
                 tg.start_soon(list_clients)
 
 
-class TestSocketWaiting:
-    """Test socket waiting functionality."""
+class TestServerWaiting:
+    """Test server waiting functionality."""
 
     @pytest.mark.asyncio
-    async def test_wait_socket_success(self, manager_process):
-        """Test waiting for an existing socket."""
-        await wait_socket(MANAGER_UDS_PATH, timeout=5.0)
+    async def test_wait_server_success(self, manager_process):
+        """Test waiting for an existing server."""
+        conn = ConnectionInfo.model_validate_json(MANAGER_CONN_PATH.read_text())
+        await wait_for_server(
+            uds_path=conn.uds_path, host=conn.host, port=conn.port, timeout=5.0
+        )
 
     @pytest.mark.asyncio
-    async def test_wait_socket_timeout(self):
-        """Test waiting for a non-existent socket times out."""
-        non_existent = RUNTIME_DIR / "non_existent.sock"
+    async def test_wait_server_timeout(self):
+        """Test waiting for a non-existent server times out."""
         with pytest.raises(OSError):
-            await wait_socket(non_existent, timeout=0.5)
+            await wait_for_server(host="127.0.0.1", port=65535, timeout=0.5)
 
     @pytest.mark.asyncio
-    async def test_wait_socket_becomes_available(self, tmp_path):
-        """Test waiting for a socket that becomes available."""
+    async def test_wait_server_becomes_available(self, tmp_path):
+        """Test waiting for a server that becomes available."""
+        # On windows we'd need to start a TCP server, but for simplicity
+        # we test with a file on Unix or just skip complex delayed start
+        if IS_WINDOWS:
+            pytest.skip("Delayed TCP start test not implemented for Windows")
+
         sock_path = tmp_path / "delayed.sock"
 
         async def create_socket_delayed():
             await anyio.sleep(0.5)
-            # Create a dummy socket file
+            # Create a dummy socket file - wait_for_server will try connect_unix
+            # which fails on a regular file, but we test the retry loop
             sock_path.touch()
 
         async with anyio.create_task_group() as tg:
             tg.start_soon(create_socket_delayed)
-            # This should wait and succeed once the file is created
-            # Note: This will still fail because we're just creating a file,
-            # not a real socket. The test shows the retry mechanism works.
             with pytest.raises(OSError):
-                await wait_socket(sock_path, timeout=2.0)
+                await wait_for_server(uds_path=sock_path, timeout=2.0)
 
 
-class TestClientSocket:
-    """Test client socket functionality."""
+class TestClientServer:
+    """Test client server functionality."""
 
     @pytest.mark.asyncio
-    async def test_client_socket_communication(self, manager_process, test_file):
-        """Test that we can communicate with a client through its socket."""
+    async def test_client_server_communication(self, manager_process, test_file):
+        """Test that we can communicate with a client through its server."""
         # Create client
         with connect_manager() as mgr_client:
             resp = mgr_client.post(
@@ -364,15 +418,21 @@ class TestClientSocket:
                 json=CreateClientRequest(path=test_file),
             )
             assert resp is not None
-            uds_path = resp.uds_path
+            conn = resp.conn
 
-        # Wait for socket to be ready
-        await wait_socket(uds_path, timeout=10.0)
+        # Wait for server to be ready
+        await wait_for_server(
+            uds_path=conn.uds_path, host=conn.host, port=conn.port, timeout=10.0
+        )
 
-        # Connect to the client socket
-        transport = httpx.AsyncHTTPTransport(uds=uds_path.as_posix())
+        # Connect to the client server
+        if conn.uds_path:
+            transport = httpx.AsyncHTTPTransport(uds=conn.uds_path.as_posix())
+        else:
+            transport = httpx.AsyncHTTPTransport()
+
         async with httpx.AsyncClient(
-            transport=transport, base_url="http://localhost", timeout=30.0
+            transport=transport, base_url=conn.url, timeout=30.0
         ) as http_client:
             # Test health endpoint (if exists)
             try:
@@ -390,13 +450,13 @@ class TestAutoStartManager:
     def test_connect_manager_auto_starts(self):
         """Test that connect_manager auto-starts the manager if not running."""
         # Ensure manager is not running
+        if MANAGER_CONN_PATH.exists():
+            MANAGER_CONN_PATH.unlink()
         if MANAGER_UDS_PATH.exists():
             MANAGER_UDS_PATH.unlink()
 
         # This should auto-start the manager
         with connect_manager() as client:
-            # Give it time to start
-            time.sleep(2)
             # Should be able to list clients
             resp = client.get("/list", ManagedClientInfoList)
             assert resp is not None
@@ -578,7 +638,7 @@ class TestRealWorldScenarios:
                 json=CreateClientRequest(path=test_file),
             )
             assert create_resp2 is not None
-            assert create_resp2.uds_path == create_resp.uds_path
+            assert create_resp2.conn == create_resp.conn
 
         # 5. Stop the server
         with connect_manager() as client:

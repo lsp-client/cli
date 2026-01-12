@@ -6,6 +6,18 @@ from lsp_client.jsonrpc.types import RawNotification, RawRequest, RawResponsePac
 from pydantic import BaseModel, RootModel
 
 
+class ConnectionInfo(BaseModel):
+    uds_path: Path | None = None
+    host: str | None = None
+    port: int | None = None
+
+    @property
+    def url(self) -> str:
+        if self.host and self.port:
+            return f"http://{self.host}:{self.port}"
+        return "http://localhost"
+
+
 class ManagedClientInfo(BaseModel):
     project_path: Path
     language: str
@@ -31,7 +43,7 @@ class CreateClientRequest(BaseModel):
 
 
 class CreateClientResponse(BaseModel):
-    uds_path: Path
+    conn: ConnectionInfo
     info: ManagedClientInfo
 
 

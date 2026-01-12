@@ -18,32 +18,39 @@ from lsp_client.server.types import ServerRequest
 from lsp_client.utils.channel import Sender
 from lsp_client.utils.workspace import Workspace
 
-from lsp_cli.utils.socket import wait_socket
+from lsp_cli.manager.models import ConnectionInfo
+from lsp_cli.utils.socket import wait_for_server
 
 
 @final
 @define
 class ManagerServer(Server):
-    uds_path: Path
+    conn: ConnectionInfo
 
     @cached_property
     def client(self) -> httpx.AsyncClient:
-        transport = httpx.AsyncHTTPTransport(uds=self.uds_path.as_posix())
+        if self.conn.uds_path:
+            transport = httpx.AsyncHTTPTransport(uds=self.conn.uds_path.as_posix())
+        else:
+            transport = httpx.AsyncHTTPTransport()
+
         return httpx.AsyncClient(
             transport=transport,
-            base_url="http://localhost",
+            base_url=self.conn.url,
             timeout=None,
         )
 
     @override
     async def check_availability(self) -> None:
-        if not self.uds_path.exists():
-            raise ServerRuntimeError(self, f"Server socket not found: {self.uds_path}")
+        if self.conn.uds_path and not self.conn.uds_path.exists():
+            raise ServerRuntimeError(
+                self, f"Server socket not found: {self.conn.uds_path}"
+            )
         try:
             await self.client.get("/health")
         except httpx.HTTPError as e:
             raise ServerRuntimeError(
-                self, f"Managed server at {self.uds_path} is not responding: {e}"
+                self, f"Managed server at {self.conn.url} is not responding: {e}"
             ) from e
 
     @override
@@ -69,5 +76,10 @@ class ManagerServer(Server):
     async def run(
         self, workspace: Workspace, sender: Sender[ServerRequest]
     ) -> AsyncGenerator[Self]:
-        await wait_socket(self.uds_path, timeout=10.0)
+        await wait_for_server(
+            uds_path=self.conn.uds_path,
+            host=self.conn.host,
+            port=self.conn.port,
+            timeout=10.0,
+        )
         yield self
