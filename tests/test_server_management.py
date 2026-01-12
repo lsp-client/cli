@@ -45,7 +45,6 @@ def manager_process():
         [sys.executable, "-m", "lsp_cli.manager"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
     )
 
     # Wait for manager to be ready
@@ -352,9 +351,9 @@ class TestConcurrentAccess:
         files = [f for f in files if f.exists()][:2]  # Limit to 2 files
 
         async def create_client(file: Path):
-            transport = httpx.AsyncHTTPTransport(uds=str(MANAGER_UDS_PATH), retries=5)
+            transport = get_manager_transport()
             async with httpx.AsyncClient(
-                transport=transport, base_url="http://localhost"
+                transport=transport, base_url=get_manager_url()
             ) as http_client:
                 async with AsyncHttpClient(http_client) as client:
                     try:
@@ -518,9 +517,9 @@ class TestStressTests:
         """Test handling many concurrent requests."""
 
         async def create_and_list():
-            transport = httpx.AsyncHTTPTransport(uds=str(MANAGER_UDS_PATH), retries=5)
+            transport = get_manager_transport()
             async with httpx.AsyncClient(
-                transport=transport, base_url="http://localhost", timeout=30.0
+                transport=transport, base_url=get_manager_url(), timeout=30.0
             ) as http_client:
                 async with AsyncHttpClient(http_client) as client:
                     try:
@@ -550,9 +549,9 @@ class TestStressTests:
         """Test rapid create/delete cycles don't cause issues."""
 
         async def cycle():
-            transport = httpx.AsyncHTTPTransport(uds=str(MANAGER_UDS_PATH), retries=5)
+            transport = get_manager_transport()
             async with httpx.AsyncClient(
-                transport=transport, base_url="http://localhost", timeout=30.0
+                transport=transport, base_url=get_manager_url(), timeout=30.0
             ) as http_client:
                 async with AsyncHttpClient(http_client) as client:
                     try:
@@ -595,9 +594,9 @@ class TestRealWorldScenarios:
         # Test by making rapid requests to the manager
 
         async def make_request():
-            transport = httpx.AsyncHTTPTransport(uds=str(MANAGER_UDS_PATH), retries=5)
+            transport = get_manager_transport()
             async with httpx.AsyncClient(
-                transport=transport, base_url="http://localhost", timeout=30.0
+                transport=transport, base_url=get_manager_url(), timeout=30.0
             ) as http_client:
                 try:
                     async with AsyncHttpClient(http_client) as client:

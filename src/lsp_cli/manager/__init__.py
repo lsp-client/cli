@@ -39,7 +39,7 @@ def connect_manager() -> HttpClient:
     if MANAGER_CONN_PATH.exists():
         try:
             conn = ConnectionInfo.model_validate_json(MANAGER_CONN_PATH.read_text())
-        except (OSError, ValueError, Exception) as e:
+        except (OSError, ValueError, Exception):
             # Failed to read or parse connection info - will try to start manager
             # Catches OSError (file read), ValueError (JSON/validation), or other parsing errors
             pass

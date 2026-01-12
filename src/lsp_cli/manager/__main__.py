@@ -1,5 +1,3 @@
-import socket
-
 import uvicorn
 
 from lsp_cli.manager.models import ConnectionInfo
@@ -15,10 +13,16 @@ if __name__ == "__main__":
             conn = ConnectionInfo(host="127.0.0.1", port=port)
             MANAGER_CONN_PATH.parent.mkdir(parents=True, exist_ok=True)
             MANAGER_CONN_PATH.write_text(conn.model_dump_json())
-            # Pass the file descriptor to uvicorn to avoid race condition
-            uvicorn.run(app, host="127.0.0.1", port=port, fd=sock.fileno())
-        finally:
+            # On Windows, fd is not supported by uvicorn, so we close the socket
+            # before starting the server.
             sock.close()
+            uvicorn.run(app, host="127.0.0.1", port=port)
+        finally:
+            # ensure socket is closed if it wasn't already
+            try:
+                sock.close()
+            except Exception:
+                pass
     else:
         MANAGER_UDS_PATH.unlink(missing_ok=True)
         MANAGER_UDS_PATH.parent.mkdir(parents=True, exist_ok=True)

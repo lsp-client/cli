@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import socket
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -42,7 +41,6 @@ class ManagedClient:
     _logger: loguru.Logger = field(init=False)
     _logger_sink_id: int = field(init=False)
     _port: int | None = field(init=False, default=None)
-    _socket: socket.socket | None = field(init=False, default=None)
 
     def __attrs_post_init__(self) -> None:
         self._deadline = anyio.current_time() + settings.idle_timeout
@@ -142,17 +140,16 @@ class ManagedClient:
         )
 
         if IS_WINDOWS:
-            sock, port_val = allocate_port()
-            self._port = port_val
-            self._socket = sock  # Keep reference to close later
-
+            # Port should already be allocated in run()
+            port = self._port
+            if port is None:
+                raise RuntimeError("Port not allocated")
             config = uvicorn.Config(
                 app,
                 host="127.0.0.1",
-                port=port_val,
+                port=port,
                 loop="asyncio",
                 log_config=None,
-                fd=sock.fileno(),
             )
         else:
             config = uvicorn.Config(
@@ -170,16 +167,22 @@ class ManagedClient:
                 await self._server.serve()
 
     async def run(self) -> None:
+        if IS_WINDOWS:
+            sock, port_val = allocate_port()
+            self._port = port_val
+            # On Windows, fd is not supported by uvicorn, so we close the socket
+            # before starting the server.
+            sock.close()
+        else:
+            uds_path = anyio.Path(self.uds_path)
+            await uds_path.unlink(missing_ok=True)
+            await uds_path.parent.mkdir(parents=True, exist_ok=True)
+
         self._logger.info(
             "Starting managed client for project {} at {}",
             self.target.project_path,
             self.conn,
         )
-
-        if not IS_WINDOWS:
-            uds_path = anyio.Path(self.uds_path)
-            await uds_path.unlink(missing_ok=True)
-            await uds_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             await self._serve()
@@ -187,10 +190,6 @@ class ManagedClient:
             self._logger.info("Cleaning up client")
             if not IS_WINDOWS:
                 await anyio.Path(self.uds_path).unlink(missing_ok=True)
-            else:
-                # Close the socket on Windows
-                if self._socket is not None:
-                    self._socket.close()
             self._logger.remove(self._logger_sink_id)
             self._timeout_scope.cancel()
             self._server_scope.cancel()

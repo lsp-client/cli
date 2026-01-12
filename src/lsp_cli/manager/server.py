@@ -31,9 +31,7 @@ class ManagerServer(Server):
         """Get or create the HTTP client for this server."""
         if self._client is None:
             if self.conn.uds_path:
-                transport = httpx.AsyncHTTPTransport(
-                    uds=self.conn.uds_path.as_posix()
-                )
+                transport = httpx.AsyncHTTPTransport(uds=self.conn.uds_path.as_posix())
             else:
                 transport = httpx.AsyncHTTPTransport()
 
