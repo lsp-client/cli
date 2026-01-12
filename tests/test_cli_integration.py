@@ -180,7 +180,6 @@ class TestConnectionReliability:
         """Test that manager auto-starts reliably."""
         # Kill any existing manager
         import os
-        import signal
 
         if os.name == "nt":
             subprocess.run(

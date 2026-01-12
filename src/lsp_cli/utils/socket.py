@@ -2,7 +2,6 @@ import socket
 from pathlib import Path
 
 import anyio
-import httpx
 from tenacity import AsyncRetrying, stop_after_delay, wait_fixed
 
 

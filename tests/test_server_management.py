@@ -27,7 +27,6 @@ from lsp_cli.settings import (
     IS_WINDOWS,
     MANAGER_CONN_PATH,
     MANAGER_UDS_PATH,
-    RUNTIME_DIR,
 )
 from lsp_cli.utils.http import AsyncHttpClient, HttpClient
 from lsp_cli.utils.socket import is_server_alive, wait_for_server

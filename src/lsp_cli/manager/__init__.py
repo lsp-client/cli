@@ -5,7 +5,7 @@ import sys
 
 import httpx
 
-from lsp_cli.settings import IS_WINDOWS, MANAGER_CONN_PATH, MANAGER_UDS_PATH
+from lsp_cli.settings import MANAGER_CONN_PATH
 from lsp_cli.utils.http import HttpClient
 from lsp_cli.utils.socket import is_server_alive
 
