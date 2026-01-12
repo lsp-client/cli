@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,6 +17,7 @@ from loguru import logger as global_logger
 from lsp_cli.client import TargetClient
 from lsp_cli.manager.capability import CapabilityController, Capabilities
 from lsp_cli.settings import IS_WINDOWS, LOG_DIR, RUNTIME_DIR, settings
+from lsp_cli.utils.socket import allocate_port
 
 from .models import ConnectionInfo, ManagedClientInfo
 
@@ -40,6 +42,7 @@ class ManagedClient:
     _logger: loguru.Logger = field(init=False)
     _logger_sink_id: int = field(init=False)
     _port: int | None = field(init=False, default=None)
+    _socket: socket.socket | None = field(init=False, default=None)
 
     def __attrs_post_init__(self) -> None:
         self._deadline = anyio.current_time() + settings.idle_timeout
@@ -67,6 +70,11 @@ class ManagedClient:
     @property
     def conn(self) -> ConnectionInfo:
         if IS_WINDOWS:
+            if self._port is None:
+                raise RuntimeError(
+                    "Connection information is not available yet: "
+                    "the managed client has not been assigned a port."
+                )
             return ConnectionInfo(host="127.0.0.1", port=self._port)
         return ConnectionInfo(uds_path=self.uds_path)
 
@@ -134,13 +142,9 @@ class ManagedClient:
         )
 
         if IS_WINDOWS:
-            import socket
-
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("127.0.0.1", 0))
-                port_val = s.getsockname()[1]
-                assert isinstance(port_val, int)
-                self._port = port_val
+            sock, port_val = allocate_port()
+            self._port = port_val
+            self._socket = sock  # Keep reference to close later
 
             config = uvicorn.Config(
                 app,
@@ -148,6 +152,7 @@ class ManagedClient:
                 port=port_val,
                 loop="asyncio",
                 log_config=None,
+                fd=sock.fileno(),
             )
         else:
             config = uvicorn.Config(
@@ -182,6 +187,10 @@ class ManagedClient:
             self._logger.info("Cleaning up client")
             if not IS_WINDOWS:
                 await anyio.Path(self.uds_path).unlink(missing_ok=True)
+            else:
+                # Close the socket on Windows
+                if self._socket is not None:
+                    self._socket.close()
             self._logger.remove(self._logger_sink_id)
             self._timeout_scope.cancel()
             self._server_scope.cancel()

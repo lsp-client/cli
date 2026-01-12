@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from functools import cached_property
 from typing import Self, final, override
 
 import httpx
-from attrs import define
+from attrs import define, field
 from lsp_client.jsonrpc.types import (
     RawNotification,
     RawRequest,
@@ -25,19 +24,31 @@ from lsp_cli.utils.socket import wait_for_server
 @define
 class ManagerServer(Server):
     conn: ConnectionInfo
+    _client: httpx.AsyncClient | None = field(init=False, default=None)
 
-    @cached_property
+    @property
     def client(self) -> httpx.AsyncClient:
-        if self.conn.uds_path:
-            transport = httpx.AsyncHTTPTransport(uds=self.conn.uds_path.as_posix())
-        else:
-            transport = httpx.AsyncHTTPTransport()
+        """Get or create the HTTP client for this server."""
+        if self._client is None:
+            if self.conn.uds_path:
+                transport = httpx.AsyncHTTPTransport(
+                    uds=self.conn.uds_path.as_posix()
+                )
+            else:
+                transport = httpx.AsyncHTTPTransport()
 
-        return httpx.AsyncClient(
-            transport=transport,
-            base_url=self.conn.url,
-            timeout=None,
-        )
+            self._client = httpx.AsyncClient(
+                transport=transport,
+                base_url=self.conn.url,
+                timeout=None,
+            )
+        return self._client
+
+    async def _close_client(self) -> None:
+        """Close the HTTP client if it exists."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     @override
     async def check_availability(self) -> None:
@@ -81,4 +92,7 @@ class ManagerServer(Server):
             port=self.conn.port,
             timeout=10.0,
         )
-        yield self
+        try:
+            yield self
+        finally:
+            await self._close_client()

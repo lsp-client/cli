@@ -39,7 +39,9 @@ def connect_manager() -> HttpClient:
     if MANAGER_CONN_PATH.exists():
         try:
             conn = ConnectionInfo.model_validate_json(MANAGER_CONN_PATH.read_text())
-        except Exception:
+        except (OSError, ValueError, Exception) as e:
+            # Failed to read or parse connection info - will try to start manager
+            # Catches OSError (file read), ValueError (JSON/validation), or other parsing errors
             pass
 
     if not conn or not is_server_alive(
@@ -66,7 +68,8 @@ def connect_manager() -> HttpClient:
                         uds_path=conn.uds_path, host=conn.host, port=conn.port
                     ):
                         break
-                except Exception:
+                except (OSError, ValueError, Exception):
+                    # Failed to read/parse - retry in next iteration
                     pass
             time.sleep(0.1)
         else:
