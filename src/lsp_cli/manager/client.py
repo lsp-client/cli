@@ -42,7 +42,6 @@ class ManagedClient:
     _logger_sink_id: int = field(init=False)
     _port: int | None = field(init=False, default=None)
     _ready_event: anyio.Event = field(init=False, factory=anyio.Event)
-    _startup_error: Exception | None = field(init=False, default=None)
 
     def __attrs_post_init__(self) -> None:
         self._deadline = anyio.current_time() + settings.idle_timeout
@@ -68,14 +67,8 @@ class ManagedClient:
         return get_client_id(self.target)
 
     async def wait_ready(self) -> None:
-        """Wait until the client is assigned a port/socket and ready to serve.
-
-        Raises:
-            Exception: If the client failed to start.
-        """
+        """Wait until the client is assigned a port/socket and ready to serve."""
         await self._ready_event.wait()
-        if self._startup_error:
-            raise self._startup_error
 
     @property
     def conn(self) -> ConnectionInfo:
@@ -130,18 +123,12 @@ class ManagedClient:
 
         @asynccontextmanager
         async def lifespan(app: Litestar) -> AsyncGenerator[None]:
-            try:
-                async with self.target.client_cls(
-                    workspace=self.target.project_path
-                ) as client:
-                    app.state.client = client
-                    app.state.capabilities = Capabilities.build(client)
-                    self._ready_event.set()
-                    yield
-            except Exception as e:
-                self._startup_error = e
-                self._ready_event.set()
-                raise
+            async with self.target.client_cls(
+                workspace=self.target.project_path
+            ) as client:
+                app.state.client = client
+                app.state.capabilities = Capabilities.build(client)
+                yield
 
         def exception_handler(request: Request, exc: Exception) -> Response:
             self._logger.exception("Unhandled exception in Litestar: {}", exc)
@@ -195,6 +182,9 @@ class ManagedClient:
             uds_path = anyio.Path(self.uds_path)
             await uds_path.unlink(missing_ok=True)
             await uds_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Signal that connection info is available (port/socket path assigned)
+        self._ready_event.set()
 
         self._logger.info(
             "Starting managed client for project {} at {}",
