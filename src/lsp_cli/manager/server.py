@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from functools import cached_property
-from pathlib import Path
 from typing import Self, final, override
 
 import httpx
-from attrs import define
+from attrs import define, field
 from lsp_client.jsonrpc.types import (
     RawNotification,
     RawRequest,
@@ -18,32 +16,49 @@ from lsp_client.server.types import ServerRequest
 from lsp_client.utils.channel import Sender
 from lsp_client.utils.workspace import Workspace
 
-from lsp_cli.utils.socket import wait_socket
+from lsp_cli.manager.models import ConnectionInfo
+from lsp_cli.utils.socket import wait_for_server
 
 
 @final
 @define
 class ManagerServer(Server):
-    uds_path: Path
+    conn: ConnectionInfo
+    _client: httpx.AsyncClient | None = field(init=False, default=None)
 
-    @cached_property
+    @property
     def client(self) -> httpx.AsyncClient:
-        transport = httpx.AsyncHTTPTransport(uds=self.uds_path.as_posix())
-        return httpx.AsyncClient(
-            transport=transport,
-            base_url="http://localhost",
-            timeout=None,
-        )
+        """Get or create the HTTP client for this server."""
+        if self._client is None:
+            if self.conn.uds_path:
+                transport = httpx.AsyncHTTPTransport(uds=self.conn.uds_path.as_posix())
+            else:
+                transport = httpx.AsyncHTTPTransport()
+
+            self._client = httpx.AsyncClient(
+                transport=transport,
+                base_url=self.conn.url,
+                timeout=None,
+            )
+        return self._client
+
+    async def _close_client(self) -> None:
+        """Close the HTTP client if it exists."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     @override
     async def check_availability(self) -> None:
-        if not self.uds_path.exists():
-            raise ServerRuntimeError(self, f"Server socket not found: {self.uds_path}")
+        if self.conn.uds_path and not self.conn.uds_path.exists():
+            raise ServerRuntimeError(
+                self, f"Server socket not found: {self.conn.uds_path}"
+            )
         try:
             await self.client.get("/health")
         except httpx.HTTPError as e:
             raise ServerRuntimeError(
-                self, f"Managed server at {self.uds_path} is not responding: {e}"
+                self, f"Managed server at {self.conn.url} is not responding: {e}"
             ) from e
 
     @override
@@ -69,5 +84,13 @@ class ManagerServer(Server):
     async def run(
         self, workspace: Workspace, sender: Sender[ServerRequest]
     ) -> AsyncGenerator[Self]:
-        await wait_socket(self.uds_path, timeout=10.0)
-        yield self
+        await wait_for_server(
+            uds_path=self.conn.uds_path,
+            host=self.conn.host,
+            port=self.conn.port,
+            timeout=10.0,
+        )
+        try:
+            yield self
+        finally:
+            await self._close_client()

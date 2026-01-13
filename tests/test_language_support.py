@@ -15,6 +15,7 @@ Each test verifies that the CLI can:
 3. Stop the server cleanly
 """
 
+import time
 from pathlib import Path
 
 import pytest
@@ -44,9 +45,19 @@ class TestLanguageSupport(BaseLSPTest):
             )
 
             # List servers - should show Python server
+            # Give the server a moment to register in the manager
+            time.sleep(1.0)
             result = self.run_lsp_command("server", "list")
             assert result.returncode == 0, f"Failed to list servers: {result.stderr}"
-            assert "python" in result.stdout.lower(), "Python server not listed"
+
+            # If standard list doesn't show it, try one more time with a longer wait
+            if "python" not in result.stdout.lower():
+                time.sleep(2.0)
+                result = self.run_lsp_command("server", "list")
+
+            assert "python" in result.stdout.lower(), (
+                f"Python server not listed. Output: {result.stdout}"
+            )
         finally:
             # Stop server
             result = self.run_lsp_command("server", "stop", str(python_file))

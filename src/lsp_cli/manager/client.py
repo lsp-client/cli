@@ -15,9 +15,10 @@ from loguru import logger as global_logger
 
 from lsp_cli.client import TargetClient
 from lsp_cli.manager.capability import CapabilityController, Capabilities
-from lsp_cli.settings import LOG_DIR, RUNTIME_DIR, settings
+from lsp_cli.settings import IS_WINDOWS, LOG_DIR, RUNTIME_DIR, settings
+from lsp_cli.utils.socket import allocate_port
 
-from .models import ManagedClientInfo
+from .models import ConnectionInfo, ManagedClientInfo
 
 
 def get_client_id(target: TargetClient) -> str:
@@ -39,6 +40,8 @@ class ManagedClient:
 
     _logger: loguru.Logger = field(init=False)
     _logger_sink_id: int = field(init=False)
+    _port: int | None = field(init=False, default=None)
+    _ready_event: anyio.Event = field(init=False, factory=anyio.Event)
 
     def __attrs_post_init__(self) -> None:
         self._deadline = anyio.current_time() + settings.idle_timeout
@@ -62,6 +65,21 @@ class ManagedClient:
     @property
     def id(self) -> str:
         return get_client_id(self.target)
+
+    async def wait_ready(self) -> None:
+        """Wait until the client is assigned a port/socket and ready to serve."""
+        await self._ready_event.wait()
+
+    @property
+    def conn(self) -> ConnectionInfo:
+        if IS_WINDOWS:
+            if self._port is None:
+                raise RuntimeError(
+                    "Connection information is not available yet: "
+                    "the managed client has not been assigned a port."
+                )
+            return ConnectionInfo(host="127.0.0.1", port=self._port)
+        return ConnectionInfo(uds_path=self.uds_path)
 
     @property
     def uds_path(self) -> Path:
@@ -126,12 +144,25 @@ class ManagedClient:
             exception_handlers={Exception: exception_handler},
         )
 
-        config = uvicorn.Config(
-            app,
-            uds=str(self.uds_path),
-            loop="asyncio",
-            log_config=None,  # Disable default uvicorn logging
-        )
+        if IS_WINDOWS:
+            # Port should already be allocated in run()
+            port = self._port
+            if port is None:
+                raise RuntimeError("Port not allocated")
+            config = uvicorn.Config(
+                app,
+                host="127.0.0.1",
+                port=port,
+                loop="asyncio",
+                log_config=None,
+            )
+        else:
+            config = uvicorn.Config(
+                app,
+                uds=str(self.uds_path),
+                loop="asyncio",
+                log_config=None,  # Disable default uvicorn logging
+            )
         self._server = uvicorn.Server(config)
 
         async with asyncer.create_task_group() as tg:
@@ -141,21 +172,32 @@ class ManagedClient:
                 await self._server.serve()
 
     async def run(self) -> None:
+        if IS_WINDOWS:
+            sock, port_val = allocate_port()
+            self._port = port_val
+            # On Windows, fd is not supported by uvicorn, so we close the socket
+            # before starting the server.
+            sock.close()
+        else:
+            uds_path = anyio.Path(self.uds_path)
+            await uds_path.unlink(missing_ok=True)
+            await uds_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Signal that connection info is available (port/socket path assigned)
+        self._ready_event.set()
+
         self._logger.info(
             "Starting managed client for project {} at {}",
             self.target.project_path,
-            self.uds_path,
+            self.conn,
         )
-
-        uds_path = anyio.Path(self.uds_path)
-        await uds_path.unlink(missing_ok=True)
-        await uds_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
             await self._serve()
         finally:
             self._logger.info("Cleaning up client")
-            await uds_path.unlink(missing_ok=True)
+            if not IS_WINDOWS:
+                await anyio.Path(self.uds_path).unlink(missing_ok=True)
             self._logger.remove(self._logger_sink_id)
             self._timeout_scope.cancel()
             self._server_scope.cancel()

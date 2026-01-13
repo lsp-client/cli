@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from lsp_cli.manager import CreateClientRequest, CreateClientResponse
 from lsp_cli.server import get_manager_client
 from lsp_cli.utils.http import AsyncHttpClient
-from lsp_cli.utils.socket import wait_socket
+from lsp_cli.utils.socket import wait_for_server
 
 
 def clean_error_msg(msg: str) -> str:
@@ -32,12 +32,18 @@ async def managed_client(path: Path) -> AsyncGenerator[AsyncHttpClient]:
         )
         assert info is not None
 
-    uds_path = info.uds_path
-    await wait_socket(uds_path, timeout=10.0)
+    conn = info.conn
+    await wait_for_server(
+        uds_path=conn.uds_path, host=conn.host, port=conn.port, timeout=10.0
+    )
 
-    transport = httpx.AsyncHTTPTransport(uds=uds_path.as_posix())
+    if conn.uds_path:
+        transport = httpx.AsyncHTTPTransport(uds=conn.uds_path.as_posix())
+    else:
+        transport = httpx.AsyncHTTPTransport()
+
     async with AsyncHttpClient(
-        httpx.AsyncClient(transport=transport, base_url="http://localhost")
+        httpx.AsyncClient(transport=transport, base_url=conn.url)
     ) as client:
         yield client
 

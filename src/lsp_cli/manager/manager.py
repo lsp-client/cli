@@ -19,6 +19,7 @@ from lsp_cli.settings import LOG_DIR, settings
 
 from .client import ManagedClient, get_client_id
 from .models import (
+    ConnectionInfo,
     CreateClientRequest,
     CreateClientResponse,
     DeleteClientRequest,
@@ -49,7 +50,7 @@ class Manager:
             f"[Manager] Manager log initialized at {log_path} (level: {log_level})"
         )
 
-    async def create_client(self, path: Path) -> Path:
+    async def create_client(self, path: Path) -> ConnectionInfo:
         target = find_client(path)
         if not target:
             raise NotFoundException(f"No LSP client found for path: {path}")
@@ -62,11 +63,13 @@ class Manager:
             m_client = ManagedClient(target)
             self._clients[client_id] = m_client
             self._tg.soonify(self._run_client)(m_client)
+            # Wait for the client to be ready (assigned a port/socket)
+            await m_client.wait_ready()
         else:
             logger.info(f"[Manager] Reusing existing client: {client_id}")
             self._clients[client_id]._reset_timeout()
 
-        return self._clients[client_id].uds_path
+        return self._clients[client_id].conn
 
     @logger.catch(level="ERROR")
     async def _run_client(self, client: ManagedClient) -> None:
@@ -131,12 +134,12 @@ async def create_client_handler(
     data: CreateClientRequest, state: State
 ) -> CreateClientResponse:
     manager = get_manager(state)
-    uds_path = await manager.create_client(data.path)
+    conn = await manager.create_client(data.path)
     info = manager.inspect_client(data.path)
     if not info:
         raise RuntimeError("Failed to create client")
 
-    return CreateClientResponse(uds_path=uds_path, info=info)
+    return CreateClientResponse(conn=conn, info=info)
 
 
 @delete("/delete", status_code=200)

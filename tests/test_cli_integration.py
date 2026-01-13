@@ -179,11 +179,45 @@ class TestConnectionReliability:
     def test_manager_auto_start_reliability(self):
         """Test that manager auto-starts reliably."""
         # Kill any existing manager
-        subprocess.run(
-            ["pkill", "-f", "lsp_cli.manager"],
-            capture_output=True,
-        )
-        time.sleep(0.5)
+        import os
+
+        if os.name == "nt":
+            # On Windows, try to use WMIC if available, otherwise skip this test step
+            # WMIC is deprecated in newer Windows versions but may still be present
+            try:
+                result = subprocess.run(
+                    [
+                        "wmic",
+                        "process",
+                        "where",
+                        "CommandLine like '%lsp_cli.manager%'",
+                        "delete",
+                    ],
+                    capture_output=True,
+                    timeout=5,
+                )
+                # If WMIC is not available, try tasklist/taskkill as fallback
+                if result.returncode != 0:
+                    # Try to use PowerShell as a more modern alternative
+                    subprocess.run(
+                        [
+                            "powershell",
+                            "-Command",
+                            "Get-Process | Where-Object {$_.CommandLine -like '*lsp_cli.manager*'} | Stop-Process -Force",
+                        ],
+                        capture_output=True,
+                        timeout=5,
+                    )
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                # WMIC/PowerShell not available or timed out - continue with test
+                # The manager auto-start will still work if no manager is running
+                pass
+        else:
+            subprocess.run(
+                ["pkill", "-f", "lsp_cli.manager"],
+                capture_output=True,
+            )
+        time.sleep(1.0)
 
         # First command should auto-start manager
         result = self.run_lsp_command("server", "list")

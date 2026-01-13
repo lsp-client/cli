@@ -1,3 +1,4 @@
+import platform
 from pathlib import Path
 from typing import Final, Literal
 
@@ -13,7 +14,9 @@ APP_NAME = "lsp-cli"
 CONFIG_PATH = Path(user_config_dir(APP_NAME)) / "config.toml"
 RUNTIME_DIR = Path(user_runtime_dir(APP_NAME))
 LOG_DIR = Path(user_log_dir(APP_NAME))
+IS_WINDOWS = platform.system() == "Windows"
 MANAGER_UDS_PATH = RUNTIME_DIR / "manager.sock"
+MANAGER_CONN_PATH = RUNTIME_DIR / "manager.json"
 
 LogLevel = Literal["TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
